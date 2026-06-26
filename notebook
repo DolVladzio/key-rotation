@@ -1,0 +1,7 @@
+but 
+- if there's only 1 key, doesn't matter how old it's, it should not be deleted
+it should create a new one and add to the txt file
+
+- if there're 2 keys and one of them is > 45days, then delete the oldest and create a new one and again add to the txt file
+
+- if there're 2 keys < 45days it doesn't delete anything and just adds those keys id to the txt file
