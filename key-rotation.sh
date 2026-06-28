@@ -80,8 +80,37 @@ for USER in $USERS; do
     
     echo "  User: $USER" >> "$REPORT_FILE"
     echo "  Keys found: $KEY_COUNT" >> "$REPORT_FILE"
+
+    # Retrieve OWNER and CUSTOMER tags
+    echo -e "${BLUE}      [INFO] Retrieving OWNER and CUSTOMER tags for user $USER...${NC}"
+    echo "  Tags:" >> "$REPORT_FILE"
+    TAGS=$(aws iam list-user-tags --user-name "$USER" \
+            --profile "$PROFILE" \
+            --query 'Tags[*].[Key,Value]' \
+            --output text 2>/dev/null || true)
+    
+    if [[ -z "$TAGS" ]]; then
+        echo -e "${YELLOW}      [WARNING] Could not retrieve tags for user $USER${NC}"
+        echo "    WARNING: Tags unavailable" >> "$REPORT_FILE"
+    else
+        MATCHED=0
+        while IFS=$'\t' read -r TAG_KEY TAG_VALUE; do
+            if [[ "${TAG_KEY^^}" == "OWNER" || "${TAG_KEY^^}" == "CUSTOMER" ]]; then
+                echo "    $TAG_KEY: $TAG_VALUE" >> "$REPORT_FILE"
+                MATCHED=1
+            fi
+        done <<< "$TAGS"
+
+        if [[ $MATCHED -eq 1 ]]; then
+            echo -e "${GREEN}      [INFO] Tags retrieved successfully${NC}"
+        else
+            echo -e "${YELLOW}      [WARNING] OWNER/CUSTOMER tags not found for user $USER${NC}"
+            echo "    WARNING: OWNER/CUSTOMER tags not found" >> "$REPORT_FILE"
+        fi
+    fi
     
     # Process keys
+    echo "  Access Keys:" >> "$REPORT_FILE"
     KEYS_DATA=()
     while IFS=$'\t' read -r KEY_ID CREATE_DATE; do
         # Get last used data for each key
