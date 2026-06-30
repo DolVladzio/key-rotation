@@ -12,7 +12,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-DAYS_THRESHOLD=45
+DAYS_THRESHOLD=2
 PROFILE="${1:-}"
 
 if [[ -z "$PROFILE" ]]; then
@@ -24,16 +24,17 @@ fi
 echo -e "${BLUE}Fetching AWS account information...${NC}"
 ACCOUNT_ID=$(aws sts get-caller-identity --profile "$PROFILE" --query Account --output text 2>/dev/null)
 
+if [[ -z "$ACCOUNT_ID" ]]; then
+    echo -e "${RED}Error: Could not get account ID. Check your profile: $PROFILE${NC}"
+    exit 1
+fi
+
 REPORT_DIR="./reports/$ACCOUNT_ID"
 # Create reports directory if it doesn't exist
 if ! [ -d "$REPORT_DIR" ]; then
     mkdir -p "$REPORT_DIR"
 fi
 
-if [[ -z "$ACCOUNT_ID" ]]; then
-    echo -e "${RED}Error: Could not get account ID. Check your profile: $PROFILE${NC}"
-    exit 1
-fi
 
 echo -e "${GREEN}Account ID: $ACCOUNT_ID${NC}"
 
@@ -78,8 +79,8 @@ for USER in $USERS; do
     # Count keys
     KEY_COUNT=$(echo "$KEYS" | wc -l)
     
-    echo "  User: $USER" >> "$REPORT_FILE"
-    echo "  Keys found: $KEY_COUNT" >> "$REPORT_FILE"
+    echo "  IAM юзер: arn:aws:iam::$ACCOUNT_ID:user/$USER" >> "$REPORT_FILE"
+    echo "  Ключів знайдено: $KEY_COUNT" >> "$REPORT_FILE"
 
     # Retrieve OWNER and CUSTOMER tags
     echo -e "${BLUE}      [INFO] Retrieving OWNER and CUSTOMER tags for user $USER...${NC}"
@@ -116,7 +117,7 @@ for USER in $USERS; do
         # Get last used data for each key
         LAST_USED=$(aws iam get-access-key-last-used --access-key-id "$KEY_ID" --profile "$PROFILE" --query 'AccessKeyLastUsed.LastUsedDate' --output text 2>/dev/null || echo "None")
         if [[ "$LAST_USED" == "None" || "$LAST_USED" == "null" || -z "$LAST_USED" ]]; then
-            LAST_USED="Never"
+            LAST_USED="Ніколи"
         fi
         KEYS_DATA+=("$KEY_ID|$CREATE_DATE|$LAST_USED")
     done <<< "$KEYS"
@@ -128,8 +129,8 @@ for USER in $USERS; do
         NOW_TIMESTAMP=$(date +%s)
         AGE_DAYS=$(( (NOW_TIMESTAMP - CREATE_TIMESTAMP) / 86400 ))
 
-        if [[ "$LAST_USED" == "Never" ]]; then
-            LAST_USED_STATUS="Never"
+        if [[ "$LAST_USED" == "Ніколи" ]]; then
+            LAST_USED_STATUS="Ніколи"
         else
             LAST_USED_TS=$(date -d "$LAST_USED" +%s)
             LAST_USED_AGE_DAYS=$(( (NOW_TIMESTAMP - LAST_USED_TS) / 86400 ))
@@ -138,16 +139,15 @@ for USER in $USERS; do
 
         echo "    - AccessKeyId: $KEY_ID (Created: $CREATE_DATE, Age: ${AGE_DAYS} days, LastUsed: $LAST_USED_STATUS)" >> "$REPORT_FILE"
         echo -e "${YELLOW}      [ACTION] Creating new access key (keeping existing one)${NC}"
-        # NEW_KEY=$(aws iam create-access-key --user-name "$USER" --profile "$PROFILE" --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text)
-        # if [[ -z "$NEW_KEY" ]]; then
-        #     echo -e "${RED}      [ERROR] Failed to create new access key${NC}"
-        #     echo "      Status: ERROR - Failed to create new access key" >> "$REPORT_FILE"
-        #     exit 1
-        # fi
+        NEW_KEY=$(aws iam create-access-key --user-name "$USER" --profile "$PROFILE" --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text)
+        if [[ -z "$NEW_KEY" ]]; then
+            echo -e "${RED}      [ERROR] Failed to create new access key${NC}"
+            echo "      Status: ERROR - Failed to create new access key" >> "$REPORT_FILE"
+            exit 1
+        fi
 
         echo "      Status: NEW KEY CREATED" >> "$REPORT_FILE"
-        echo "      Existing Key: $KEY_ID" >> "$REPORT_FILE"
-        # echo "      New Key: $NEW_KEY" >> "$REPORT_FILE"
+        echo "      New Key: $NEW_KEY" >> "$REPORT_FILE"
         KEY_ACTIONS=$((KEY_ACTIONS + 1))
 
     elif [[ $KEY_COUNT -eq 2 ]]; then
@@ -161,8 +161,8 @@ for USER in $USERS; do
             CREATE_TIMESTAMP=$(date -d "$CREATE_DATE" +%s)
             CREATE_AGE_DAYS=$(( (NOW_TIMESTAMP - CREATE_TIMESTAMP) / 86400 ))
 
-            if [[ "$LAST_USED" == "Never" ]]; then
-                LAST_USED_STATUS="Never"
+            if [[ "$LAST_USED" == "Ніколи" ]]; then
+                LAST_USED_STATUS="Ніколи"
                 LAST_USED_AGE_DAYS=99999
             else
                 LAST_USED_TS=$(date -d "$LAST_USED" +%s)
@@ -172,13 +172,13 @@ for USER in $USERS; do
 
             echo "    - AccessKeyId: $KEY_ID (Created: $CREATE_DATE, Age: ${CREATE_AGE_DAYS} days, LastUsed: $LAST_USED_STATUS)" >> "$REPORT_FILE"
 
-            if [[ $CREATE_AGE_DAYS -gt $DAYS_THRESHOLD && "$LAST_USED" == "Never" ]]; then
+            if [[ $CREATE_AGE_DAYS -gt $DAYS_THRESHOLD && "$LAST_USED" == "Ніколи" ]]; then
                 if [[ $CREATE_AGE_DAYS -gt $ELIGIBLE_AGE ]]; then
                     ELIGIBLE_KEY="$KEY_ID"
                     ELIGIBLE_AGE=$CREATE_AGE_DAYS
                 fi
                 DELETE_REASON="created > ${DAYS_THRESHOLD} days and never used"
-            elif [[ $CREATE_AGE_DAYS -gt $DAYS_THRESHOLD && "$LAST_USED" != "Never" && $LAST_USED_AGE_DAYS -gt $DAYS_THRESHOLD ]]; then
+            elif [[ $CREATE_AGE_DAYS -gt $DAYS_THRESHOLD && "$LAST_USED" != "Ніколи" && $LAST_USED_AGE_DAYS -gt $DAYS_THRESHOLD ]]; then
                 if [[ $CREATE_AGE_DAYS -gt $ELIGIBLE_AGE ]]; then
                     ELIGIBLE_KEY="$KEY_ID"
                     ELIGIBLE_AGE=$CREATE_AGE_DAYS
@@ -189,23 +189,23 @@ for USER in $USERS; do
 
         if [[ -n "$ELIGIBLE_KEY" ]]; then
             echo -e "${YELLOW}      [ACTION] Deleting old key $ELIGIBLE_KEY ($DELETE_REASON)${NC}"
-            # if ! aws iam delete-access-key --user-name "$USER" --access-key-id "$ELIGIBLE_KEY" --profile "$PROFILE"; then
-            #     echo -e "${RED}      [ERROR] Failed to delete key $ELIGIBLE_KEY${NC}"
-            #     echo "      Status: ERROR - Failed to delete key $ELIGIBLE_KEY" >> "$REPORT_FILE"
-            #     exit 1
-            # fi
+            if ! aws iam delete-access-key --user-name "$USER" --access-key-id "$ELIGIBLE_KEY" --profile "$PROFILE"; then
+                echo -e "${RED}      [ERROR] Failed to delete key $ELIGIBLE_KEY${NC}"
+                echo "      Status: ERROR - Failed to delete key $ELIGIBLE_KEY" >> "$REPORT_FILE"
+                exit 1
+            fi
 
             echo -e "${YELLOW}      [ACTION] Creating new access key${NC}"
-            # NEW_KEY=$(aws iam create-access-key --user-name "$USER" --profile "$PROFILE" --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text)
-            # if [[ -z "$NEW_KEY" ]]; then
-            #     echo -e "${RED}      [ERROR] Failed to create new access key${NC}"
-            #     echo "      Status: ERROR - Failed to create new access key" >> "$REPORT_FILE"
-            #     exit 1
-            # fi
+            NEW_KEY=$(aws iam create-access-key --user-name "$USER" --profile "$PROFILE" --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text)
+            if [[ -z "$NEW_KEY" ]]; then
+                echo -e "${RED}      [ERROR] Failed to create new access key${NC}"
+                echo "      Status: ERROR - Failed to create new access key" >> "$REPORT_FILE"
+                exit 1
+            fi
 
             echo "      Status: ROTATED - Deleted old key and created new key" >> "$REPORT_FILE"
             echo "      Deleted Key: $ELIGIBLE_KEY" >> "$REPORT_FILE"
-            # echo "      New Key: $NEW_KEY" >> "$REPORT_FILE"
+            echo "      New Key: $NEW_KEY" >> "$REPORT_FILE"
             KEY_ACTIONS=$((KEY_ACTIONS + 1))
         else
             echo -e "${BLUE}      [REPORT] No keys are eligible for deletion${NC}"
