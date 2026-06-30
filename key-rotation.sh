@@ -12,7 +12,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-DAYS_THRESHOLD=2
+DAYS_THRESHOLD=45
 PROFILE="${1:-}"
 
 if [[ -z "$PROFILE" ]]; then
@@ -35,9 +35,7 @@ if ! [ -d "$REPORT_DIR" ]; then
     mkdir -p "$REPORT_DIR"
 fi
 
-
 echo -e "${GREEN}Account ID: $ACCOUNT_ID${NC}"
-
 REPORT_FILE="$REPORT_DIR/$(date +%Y%m%d_%H%M%S).txt"
 
 {
@@ -117,7 +115,7 @@ for USER in $USERS; do
         # Get last used data for each key
         LAST_USED=$(aws iam get-access-key-last-used --access-key-id "$KEY_ID" --profile "$PROFILE" --query 'AccessKeyLastUsed.LastUsedDate' --output text 2>/dev/null || echo "None")
         if [[ "$LAST_USED" == "None" || "$LAST_USED" == "null" || -z "$LAST_USED" ]]; then
-            LAST_USED="Ніколи"
+            LAST_USED="Never"
         fi
         KEYS_DATA+=("$KEY_ID|$CREATE_DATE|$LAST_USED")
     done <<< "$KEYS"
@@ -129,15 +127,15 @@ for USER in $USERS; do
         NOW_TIMESTAMP=$(date +%s)
         AGE_DAYS=$(( (NOW_TIMESTAMP - CREATE_TIMESTAMP) / 86400 ))
 
-        if [[ "$LAST_USED" == "Ніколи" ]]; then
-            LAST_USED_STATUS="Ніколи"
+        if [[ "$LAST_USED" == "Never" ]]; then
+            LAST_USED_STATUS="Never"
         else
             LAST_USED_TS=$(date -d "$LAST_USED" +%s)
             LAST_USED_AGE_DAYS=$(( (NOW_TIMESTAMP - LAST_USED_TS) / 86400 ))
-            LAST_USED_STATUS="$LAST_USED ($LAST_USED_AGE_DAYS days ago)"
+            LAST_USED_STATUS="($LAST_USED_AGE_DAYS days ago)"
         fi
 
-        echo "    - AccessKeyId: $KEY_ID (Created: $CREATE_DATE, Age: ${AGE_DAYS} days, LastUsed: $LAST_USED_STATUS)" >> "$REPORT_FILE"
+        echo "    - AccessKeyId: $KEY_ID (${AGE_DAYS} days old, LastUsed: $LAST_USED_STATUS)" >> "$REPORT_FILE"
         echo -e "${YELLOW}      [ACTION] Creating new access key (keeping existing one)${NC}"
         NEW_KEY=$(aws iam create-access-key --user-name "$USER" --profile "$PROFILE" --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text)
         if [[ -z "$NEW_KEY" ]]; then
@@ -161,24 +159,24 @@ for USER in $USERS; do
             CREATE_TIMESTAMP=$(date -d "$CREATE_DATE" +%s)
             CREATE_AGE_DAYS=$(( (NOW_TIMESTAMP - CREATE_TIMESTAMP) / 86400 ))
 
-            if [[ "$LAST_USED" == "Ніколи" ]]; then
-                LAST_USED_STATUS="Ніколи"
+            if [[ "$LAST_USED" == "Never" ]]; then
+                LAST_USED_STATUS="Never"
                 LAST_USED_AGE_DAYS=99999
             else
                 LAST_USED_TS=$(date -d "$LAST_USED" +%s)
                 LAST_USED_AGE_DAYS=$(( (NOW_TIMESTAMP - LAST_USED_TS) / 86400 ))
-                LAST_USED_STATUS="$LAST_USED ($LAST_USED_AGE_DAYS days ago)"
+                LAST_USED_STATUS="($LAST_USED_AGE_DAYS days ago)"
             fi
 
-            echo "    - AccessKeyId: $KEY_ID (Created: $CREATE_DATE, Age: ${CREATE_AGE_DAYS} days, LastUsed: $LAST_USED_STATUS)" >> "$REPORT_FILE"
+            echo "    - AccessKeyId: $KEY_ID (${CREATE_AGE_DAYS} days old, LastUsed: $LAST_USED_STATUS)" >> "$REPORT_FILE"
 
-            if [[ $CREATE_AGE_DAYS -gt $DAYS_THRESHOLD && "$LAST_USED" == "Ніколи" ]]; then
+            if [[ $CREATE_AGE_DAYS -gt $DAYS_THRESHOLD && "$LAST_USED" == "Never" ]]; then
                 if [[ $CREATE_AGE_DAYS -gt $ELIGIBLE_AGE ]]; then
                     ELIGIBLE_KEY="$KEY_ID"
                     ELIGIBLE_AGE=$CREATE_AGE_DAYS
                 fi
                 DELETE_REASON="created > ${DAYS_THRESHOLD} days and never used"
-            elif [[ $CREATE_AGE_DAYS -gt $DAYS_THRESHOLD && "$LAST_USED" != "Ніколи" && $LAST_USED_AGE_DAYS -gt $DAYS_THRESHOLD ]]; then
+            elif [[ $CREATE_AGE_DAYS -gt $DAYS_THRESHOLD && "$LAST_USED" != "Never" && $LAST_USED_AGE_DAYS -gt $DAYS_THRESHOLD ]]; then
                 if [[ $CREATE_AGE_DAYS -gt $ELIGIBLE_AGE ]]; then
                     ELIGIBLE_KEY="$KEY_ID"
                     ELIGIBLE_AGE=$CREATE_AGE_DAYS
@@ -210,10 +208,6 @@ for USER in $USERS; do
         else
             echo -e "${BLUE}      [REPORT] No keys are eligible for deletion${NC}"
             echo "      Status: REVIEW ONLY - No deletion performed" >> "$REPORT_FILE"
-            for KEY_INFO in "${KEYS_DATA[@]}"; do
-                IFS='|' read -r KEY_ID CREATE_DATE LAST_USED <<< "$KEY_INFO"
-                echo "      Key: $KEY_ID" >> "$REPORT_FILE"
-            done
         fi
     else
         echo -e "${YELLOW}      [WARNING] Unsupported key count: $KEY_COUNT. Skipping advanced rotation logic.${NC}"
