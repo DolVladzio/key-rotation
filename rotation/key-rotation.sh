@@ -10,16 +10,16 @@ NC='\033[0m'
 
 DAYS_THRESHOLD=45
 
-AWS_PROFILEs=(
-
+AWS_PROFILES=(
+iamfullaccess-211255476995
 )
 
-if [[ -z "$PROFILE" ]]; then
-    echo -e "${RED}Error: AWS_PROFILE is not set${NC}"
+if [[ -z "$AWS_PROFILES" ]]; then
+    echo -e "${RED}Error: AWS_PROFILES is not set${NC}"
     exit 1
 fi
 
-for PROFILE in "${AWS_PROFILEs[@]}"; do
+for PROFILE in "${AWS_PROFILES[@]}"; do
     echo -e "${BLUE}Processing AWS profile: $PROFILE${NC}"
     echo -e "${BLUE}Fetching AWS account information...${NC}"
     ACCOUNT_ID=$(aws sts get-caller-identity --profile "$PROFILE" --query Account --output text 2>/dev/null)
@@ -30,7 +30,6 @@ for PROFILE in "${AWS_PROFILEs[@]}"; do
     fi
 
     REPORT_DIR="./reports/$ACCOUNT_ID"
-    # Create reports directory if it doesn't exist
     if ! [ -d "$REPORT_DIR" ]; then
         mkdir -p "$REPORT_DIR"
     fi
@@ -42,7 +41,6 @@ for PROFILE in "${AWS_PROFILEs[@]}"; do
         echo "=========================================="
         echo "Account ID: $ACCOUNT_ID"
         echo "Profile: $PROFILE"
-        echo "Date: $(date)"
         echo "=========================================="
         echo ""
     } > "$REPORT_FILE"
@@ -94,7 +92,8 @@ for PROFILE in "${AWS_PROFILEs[@]}"; do
         else
             MATCHED=0
             while IFS=$'\t' read -r TAG_KEY TAG_VALUE; do
-                if [[ "${TAG_KEY^^}" == "OWNER" || "${TAG_KEY^^}" == "CUSTOMER" ]]; then
+                TAG_KEY_UPPER="${TAG_KEY^^}"
+                if [[ "$TAG_KEY_UPPER" == *OWNER* || "$TAG_KEY_UPPER" == *CUSTOMER* ]]; then
                     echo "    $TAG_KEY: $TAG_VALUE" >> "$REPORT_FILE"
                     MATCHED=1
                 fi
@@ -103,8 +102,8 @@ for PROFILE in "${AWS_PROFILEs[@]}"; do
             if [[ $MATCHED -eq 1 ]]; then
                 echo -e "${GREEN}      [INFO] Tags retrieved successfully${NC}"
             else
-                echo -e "${YELLOW}      [WARNING] OWNER/CUSTOMER tags not found for user $USER${NC}"
-                echo "    WARNING: OWNER/CUSTOMER tags not found" >> "$REPORT_FILE"
+                echo -e "${YELLOW}      [WARNING] OWNER/CUSTOMER related tags not found for user $USER${NC}"
+                echo "    WARNING: OWNER/CUSTOMER related tags not found" >> "$REPORT_FILE"
             fi
         fi
         
@@ -131,21 +130,35 @@ for PROFILE in "${AWS_PROFILEs[@]}"; do
                 LAST_USED_STATUS="Never"
             else
                 LAST_USED_TS=$(date -d "$LAST_USED" +%s)
-                LAST_USED_AGE_DAYS=$(( (NOW_TIMESTAMP - LAST_USED_TS) / 86400 ))
-                LAST_USED_STATUS="($LAST_USED_AGE_DAYS days ago)"
+                LAST_USED_AGE_SECONDS=$(( NOW_TIMESTAMP - LAST_USED_TS ))
+                LAST_USED_AGE_DAYS=$(( LAST_USED_AGE_SECONDS / 86400 ))
+                LAST_USED_AGE_HOURS=$(( (LAST_USED_AGE_SECONDS % 86400) / 3600 ))
+                LAST_USED_AGE_MINUTES=$(( (LAST_USED_AGE_SECONDS % 3600) / 60 ))
+
+                if [[ $LAST_USED_AGE_DAYS -gt 0 ]]; then
+                    LAST_USED_STATUS="($LAST_USED_AGE_DAYS days ago)"
+                elif [[ $LAST_USED_AGE_HOURS -gt 0 ]]; then
+                    LAST_USED_STATUS="($LAST_USED_AGE_HOURS hours ago)"
+                elif [[ $LAST_USED_AGE_MINUTES -gt 0 ]]; then
+                    LAST_USED_STATUS="($LAST_USED_AGE_MINUTES minutes ago)"
+                else
+                    LAST_USED_STATUS="(just now)"
+                fi
             fi
 
             echo "    - AccessKeyId: $KEY_ID (${AGE_DAYS} days old, LastUsed: $LAST_USED_STATUS)" >> "$REPORT_FILE"
             echo -e "${YELLOW}      [ACTION] Creating new access key (keeping existing one)${NC}"
-            NEW_KEY=$(aws iam create-access-key --user-name "$USER" --profile "$PROFILE" --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text)
-            if [[ -z "$NEW_KEY" ]]; then
+            read -r -a KEY_INFO <<< $(aws iam create-access-key --user-name "$USER" --profile "$PROFILE" --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text)
+            if [[ -z "${KEY_INFO[0]}" || -z "${KEY_INFO[1]}" ]]; then
                 echo -e "${RED}      [ERROR] Failed to create new access key${NC}"
                 echo "      Status: ERROR - Failed to create new access key" >> "$REPORT_FILE"
                 exit 1
             fi
 
             echo "      Status: NEW KEY CREATED" >> "$REPORT_FILE"
-            echo "      New Key: $NEW_KEY" >> "$REPORT_FILE"
+            echo "      Нова пара:" >> "$REPORT_FILE"
+            echo "      ${KEY_INFO[0]}" >> "$REPORT_FILE"
+            echo "      ${KEY_INFO[1]}" >> "$REPORT_FILE"
             KEY_ACTIONS=$((KEY_ACTIONS + 1))
 
         elif [[ $KEY_COUNT -eq 2 ]]; then
@@ -164,8 +177,20 @@ for PROFILE in "${AWS_PROFILEs[@]}"; do
                     LAST_USED_AGE_DAYS=99999
                 else
                     LAST_USED_TS=$(date -d "$LAST_USED" +%s)
-                    LAST_USED_AGE_DAYS=$(( (NOW_TIMESTAMP - LAST_USED_TS) / 86400 ))
-                    LAST_USED_STATUS="($LAST_USED_AGE_DAYS days ago)"
+                    LAST_USED_AGE_SECONDS=$(( NOW_TIMESTAMP - LAST_USED_TS ))
+                    LAST_USED_AGE_DAYS=$(( LAST_USED_AGE_SECONDS / 86400 ))
+                    LAST_USED_AGE_HOURS=$(( (LAST_USED_AGE_SECONDS % 86400) / 3600 ))
+                    LAST_USED_AGE_MINUTES=$(( (LAST_USED_AGE_SECONDS % 3600) / 60 ))
+
+                    if [[ $LAST_USED_AGE_DAYS -gt 0 ]]; then
+                        LAST_USED_STATUS="($LAST_USED_AGE_DAYS days ago)"
+                    elif [[ $LAST_USED_AGE_HOURS -gt 0 ]]; then
+                        LAST_USED_STATUS="($LAST_USED_AGE_HOURS hours ago)"
+                    elif [[ $LAST_USED_AGE_MINUTES -gt 0 ]]; then
+                        LAST_USED_STATUS="($LAST_USED_AGE_MINUTES minutes ago)"
+                    else
+                        LAST_USED_STATUS="(just now)"
+                    fi
                 fi
 
                 echo "    - AccessKeyId: $KEY_ID (${CREATE_AGE_DAYS} days old, LastUsed: $LAST_USED_STATUS)" >> "$REPORT_FILE"
@@ -195,7 +220,7 @@ for PROFILE in "${AWS_PROFILEs[@]}"; do
 
                 echo -e "${YELLOW}      [ACTION] Creating new access key${NC}"
                 NEW_KEY=$(aws iam create-access-key --user-name "$USER" --profile "$PROFILE" --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text)
-                if [[ -z "$NEW_KEY" ]]; then
+                if [[ -z "${KEY_INFO[0]}" || -z "${KEY_INFO[1]}" ]]; then
                     echo -e "${RED}      [ERROR] Failed to create new access key${NC}"
                     echo "      Status: ERROR - Failed to create new access key" >> "$REPORT_FILE"
                     exit 1
@@ -203,7 +228,9 @@ for PROFILE in "${AWS_PROFILEs[@]}"; do
 
                 echo "      Status: ROTATED - Deleted old key and created new key" >> "$REPORT_FILE"
                 echo "      Deleted Key: $ELIGIBLE_KEY" >> "$REPORT_FILE"
-                echo "      New Key: $NEW_KEY" >> "$REPORT_FILE"
+                echo "      Нова пара:" >> "$REPORT_FILE"
+                echo "      ${KEY_INFO[0]}" >> "$REPORT_FILE"
+                echo "      ${KEY_INFO[1]}" >> "$REPORT_FILE"                
                 KEY_ACTIONS=$((KEY_ACTIONS + 1))
             else
                 echo -e "${BLUE}      [REPORT] No keys are eligible for deletion${NC}"
@@ -222,7 +249,6 @@ for PROFILE in "${AWS_PROFILEs[@]}"; do
         PROCESSED_COUNT=$((PROCESSED_COUNT + 1))
     done
 
-    # Final summary
     {
         echo "=========================================="
         echo "Users processed: $PROCESSED_COUNT"
@@ -230,7 +256,8 @@ for PROFILE in "${AWS_PROFILEs[@]}"; do
         echo "=========================================="
     } >> "$REPORT_FILE"
 
+    echo ""
     echo -e "${GREEN}Script completed successfully!${NC}"
     echo -e "${GREEN}Report saved to: $REPORT_FILE${NC}"
-    echo -e "${GREEN}Successfully finished aws profile $PROFILE${NC}"
+    echo -e "${GREEN}Successfully finished aws --profile $PROFILE${NC}"
 done
