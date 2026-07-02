@@ -8,7 +8,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-DAYS_THRESHOLD=45
+DAYS_THRESHOLD=1
 
 AWS_PROFILES=(
 iamfullaccess-211255476995
@@ -148,17 +148,15 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
 
             echo "    - AccessKeyId: $KEY_ID (${AGE_DAYS} days old, LastUsed: $LAST_USED_STATUS)" >> "$REPORT_FILE"
             echo -e "${YELLOW}      [ACTION] Creating new access key (keeping existing one)${NC}"
-            read -r -a KEY_INFO <<< $(aws iam create-access-key --user-name "$USER" --profile "$PROFILE" --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text)
-            if [[ -z "${KEY_INFO[0]}" || -z "${KEY_INFO[1]}" ]]; then
+            NEW_KEY=$(aws iam create-access-key --user-name "$USER" --profile "$PROFILE" --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text)
+            if [[ -z "$NEW_KEY" ]]; then
                 echo -e "${RED}      [ERROR] Failed to create new access key${NC}"
                 echo "      Status: ERROR - Failed to create new access key" >> "$REPORT_FILE"
                 exit 1
             fi
 
             echo "      Status: NEW KEY CREATED" >> "$REPORT_FILE"
-            echo "      Нова пара:" >> "$REPORT_FILE"
-            echo "      ${KEY_INFO[0]}" >> "$REPORT_FILE"
-            echo "      ${KEY_INFO[1]}" >> "$REPORT_FILE"
+            echo "      Нова пара: $NEW_KEY" >> "$REPORT_FILE"
             KEY_ACTIONS=$((KEY_ACTIONS + 1))
 
         elif [[ $KEY_COUNT -eq 2 ]]; then
@@ -220,17 +218,14 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
 
                 echo -e "${YELLOW}      [ACTION] Creating new access key${NC}"
                 NEW_KEY=$(aws iam create-access-key --user-name "$USER" --profile "$PROFILE" --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text)
-                if [[ -z "${KEY_INFO[0]}" || -z "${KEY_INFO[1]}" ]]; then
+                if [[ -z "$NEW_KEY" ]]; then
                     echo -e "${RED}      [ERROR] Failed to create new access key${NC}"
                     echo "      Status: ERROR - Failed to create new access key" >> "$REPORT_FILE"
                     exit 1
                 fi
-
                 echo "      Status: ROTATED - Deleted old key and created new key" >> "$REPORT_FILE"
                 echo "      Deleted Key: $ELIGIBLE_KEY" >> "$REPORT_FILE"
-                echo "      Нова пара:" >> "$REPORT_FILE"
-                echo "      ${KEY_INFO[0]}" >> "$REPORT_FILE"
-                echo "      ${KEY_INFO[1]}" >> "$REPORT_FILE"                
+                echo "      Нова пара ${KEY_INFO[0]} ${KEY_INFO[1]}" >> "$REPORT_FILE"
                 KEY_ACTIONS=$((KEY_ACTIONS + 1))
             else
                 echo -e "${BLUE}      [REPORT] No keys are eligible for deletion${NC}"
