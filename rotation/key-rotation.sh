@@ -15,14 +15,18 @@ iamfullaccess-211255476995
 )
 
 # Templates
+template_text="Шановні колеги!
+У зв'язку з політикою безпеки, ми проводимо ротацію ключів доступу для IAM користувачів у вашому AWS акаунті. 
+Будь ласка, ознайомтеся з інформацією нижче та вжийте необхідних заходів."
+
 create_new_key_text() {
     local account_id="$1"
     local user_arn="$2"
     local old_key_id="$3"
     local new_key_pair="$4"
 
-    printf '\t\tAccount ID: #%s\n\t\tIAM user: %s\n\t\tСтарий ключ: %s\n\t\tНова пара: %s\n' \
-        "$account_id" "$user_arn" "$old_key_id" "$new_key_pair"
+    printf '%s\n\nAccount ID: #%s\nIAM user: %s\nСтарий ключ: %s\nНова пара: %s\n' \
+        "$template_text" "$account_id" "$user_arn" "$old_key_id" "$new_key_pair"
 }
 
 leave_existing_key_text() {
@@ -31,15 +35,15 @@ leave_existing_key_text() {
     local old_key_1="$3"
     local old_key_2="$4"
 
-    printf '\t\tAccount ID: #%s\n\t\tIAM user: %s\n\t\tСтарий ключ 1: %s\n\t\tСтарий ключ 2: %s\n\t\tПідкажіть, будь ласка, який ключ можна видалити?\n' \
-        "$account_id" "$user_arn" "$old_key_1" "$old_key_2"
+    printf '%s\n\nAccount ID: #%s\nIAM user: %s\nСтарий ключ 1: %s\nСтарий ключ 2: %s\nПідкажіть, будь ласка, який ключ можна видалити?\n' \
+        "$template_text" "$account_id" "$user_arn" "$old_key_1" "$old_key_2"
 }
 
 write_sns_message() {
     local message="$1"
     local report_file="$2"
 
-    echo -e "\tSNS message:" >> "$report_file"
+    echo -e "\nSNS message:" >> "$report_file"
     printf '%s\n' "$message" >> "$report_file"
 }
 
@@ -287,6 +291,7 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
 
         echo "" >> "$REPORT_FILE"
         PROCESSED_COUNT=$((PROCESSED_COUNT + 1))
+        echo "--------------------------------------------------------------------------" >> "$REPORT_FILE"
     done
 
     {
