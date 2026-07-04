@@ -8,11 +8,40 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-DAYS_THRESHOLD=1
+DAYS_THRESHOLD=2
 
 AWS_PROFILES=(
 iamfullaccess-211255476995
 )
+
+# Templates
+create_new_key_text() {
+    local account_id="$1"
+    local user_arn="$2"
+    local old_key_id="$3"
+    local new_key_pair="$4"
+
+    printf '\t\tAccount ID: #%s\n\t\tIAM user: %s\n\t\tСтарий ключ: %s\n\t\tНова пара: %s\n' \
+        "$account_id" "$user_arn" "$old_key_id" "$new_key_pair"
+}
+
+leave_existing_key_text() {
+    local account_id="$1"
+    local user_arn="$2"
+    local old_key_1="$3"
+    local old_key_2="$4"
+
+    printf '\t\tAccount ID: #%s\n\t\tIAM user: %s\n\t\tСтарий ключ 1: %s\n\t\tСтарий ключ 2: %s\n\t\tПідкажіть, будь ласка, який ключ можна видалити?\n' \
+        "$account_id" "$user_arn" "$old_key_1" "$old_key_2"
+}
+
+write_sns_message() {
+    local message="$1"
+    local report_file="$2"
+
+    echo -e "\tSNS message:" >> "$report_file"
+    printf '%s\n' "$message" >> "$report_file"
+}
 
 if [[ -z "$AWS_PROFILES" ]]; then
     echo -e "${RED}Error: AWS_PROFILES is not set${NC}"
@@ -75,12 +104,12 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
         # Count keys
         KEY_COUNT=$(echo "$KEYS" | wc -l)
         
-        echo "  IAM юзер: arn:aws:iam::$ACCOUNT_ID:user/$USER" >> "$REPORT_FILE"
-        echo "  Ключів знайдено: $KEY_COUNT" >> "$REPORT_FILE"
+        echo -e "\tIAM юзер: arn:aws:iam::$ACCOUNT_ID:user/$USER" >> "$REPORT_FILE"
+        echo -e "\tКлючів знайдено: $KEY_COUNT" >> "$REPORT_FILE"
 
         # Retrieve OWNER and CUSTOMER tags
         echo -e "${BLUE}      [INFO] Retrieving OWNER and CUSTOMER tags for user $USER...${NC}"
-        echo "  Tags:" >> "$REPORT_FILE"
+        echo -e "\tTags:" >> "$REPORT_FILE"
         TAGS=$(aws iam list-user-tags --user-name "$USER" \
                 --profile "$PROFILE" \
                 --query 'Tags[*].[Key,Value]' \
@@ -94,7 +123,7 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
             while IFS=$'\t' read -r TAG_KEY TAG_VALUE; do
                 TAG_KEY_UPPER="${TAG_KEY^^}"
                 if [[ "$TAG_KEY_UPPER" == *OWNER* || "$TAG_KEY_UPPER" == *CUSTOMER* ]]; then
-                    echo "    $TAG_KEY: $TAG_VALUE" >> "$REPORT_FILE"
+                    echo -e "\t    $TAG_KEY: $TAG_VALUE" >> "$REPORT_FILE"
                     MATCHED=1
                 fi
             done <<< "$TAGS"
@@ -108,7 +137,7 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
         fi
         
         # Process keys
-        echo "  Access Keys:" >> "$REPORT_FILE"
+        echo -e "\tAccess Keys:" >> "$REPORT_FILE"
         KEYS_DATA=()
         while IFS=$'\t' read -r KEY_ID CREATE_DATE; do
             # Get last used data for each key
@@ -146,17 +175,24 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
                 fi
             fi
 
-            echo "    - AccessKeyId: $KEY_ID (${AGE_DAYS} days old, LastUsed: $LAST_USED_STATUS)" >> "$REPORT_FILE"
-            echo -e "${YELLOW}      [ACTION] Creating new access key (keeping existing one)${NC}"
+            echo -e "\t\t- AccessKeyId: $KEY_ID (${AGE_DAYS} days old, LastUsed: $LAST_USED_STATUS)" >> "$REPORT_FILE"
+            echo -e "${YELLOW}      [ACTION] Creating new access key${NC}"
             NEW_KEY=$(aws iam create-access-key --user-name "$USER" --profile "$PROFILE" --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text)
             if [[ -z "$NEW_KEY" ]]; then
-                echo -e "${RED}      [ERROR] Failed to create new access key${NC}"
-                echo "      Status: ERROR - Failed to create new access key" >> "$REPORT_FILE"
+                echo -e "\t\t    ${RED}      [ERROR] Failed to create new access key${NC}"
+                echo -e "\t\t    Status: ERROR - Failed to create new access key" >> "$REPORT_FILE"
                 exit 1
             fi
 
-            echo "      Status: NEW KEY CREATED" >> "$REPORT_FILE"
-            echo "      Нова пара: $NEW_KEY" >> "$REPORT_FILE"
+            read -r -a NEW_KEY_FIELDS <<< "$NEW_KEY"
+            NEW_KEY_ID="${NEW_KEY_FIELDS[0]}"
+            NEW_KEY_SECRET="${NEW_KEY_FIELDS[1]}"
+
+            SNS_MESSAGE=$(create_new_key_text "$ACCOUNT_ID" "arn:aws:iam::$ACCOUNT_ID:user/$USER" "$KEY_ID" "$NEW_KEY")
+
+            echo -e "\t\tStatus: NEW KEY CREATED" >> "$REPORT_FILE"
+            echo -e "\t\tНова пара: $NEW_KEY_ID $NEW_KEY_SECRET" >> "$REPORT_FILE"
+            write_sns_message "$SNS_MESSAGE" "$REPORT_FILE"
             KEY_ACTIONS=$((KEY_ACTIONS + 1))
 
         elif [[ $KEY_COUNT -eq 2 ]]; then
@@ -191,7 +227,7 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
                     fi
                 fi
 
-                echo "    - AccessKeyId: $KEY_ID (${CREATE_AGE_DAYS} days old, LastUsed: $LAST_USED_STATUS)" >> "$REPORT_FILE"
+                echo -e "\t\t- AccessKeyId: $KEY_ID (${CREATE_AGE_DAYS} days old, LastUsed: $LAST_USED_STATUS)" >> "$REPORT_FILE"
 
                 if [[ $CREATE_AGE_DAYS -gt $DAYS_THRESHOLD && "$LAST_USED" == "Never" ]]; then
                     if [[ $CREATE_AGE_DAYS -gt $ELIGIBLE_AGE ]]; then
@@ -212,7 +248,7 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
                 echo -e "${YELLOW}      [ACTION] Deleting old key $ELIGIBLE_KEY ($DELETE_REASON)${NC}"
                 if ! aws iam delete-access-key --user-name "$USER" --access-key-id "$ELIGIBLE_KEY" --profile "$PROFILE"; then
                     echo -e "${RED}      [ERROR] Failed to delete key $ELIGIBLE_KEY${NC}"
-                    echo "      Status: ERROR - Failed to delete key $ELIGIBLE_KEY" >> "$REPORT_FILE"
+                    echo -e "\tStatus: ERROR - Failed to delete key $ELIGIBLE_KEY" >> "$REPORT_FILE"
                     exit 1
                 fi
 
@@ -220,23 +256,32 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
                 NEW_KEY=$(aws iam create-access-key --user-name "$USER" --profile "$PROFILE" --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text)
                 if [[ -z "$NEW_KEY" ]]; then
                     echo -e "${RED}      [ERROR] Failed to create new access key${NC}"
-                    echo "      Status: ERROR - Failed to create new access key" >> "$REPORT_FILE"
+                    echo -e "\tStatus: ERROR - Failed to create new access key" >> "$REPORT_FILE"
                     exit 1
                 fi
-                echo "      Status: ROTATED - Deleted old key and created new key" >> "$REPORT_FILE"
-                echo "      Deleted Key: $ELIGIBLE_KEY" >> "$REPORT_FILE"
-                echo "      Нова пара ${KEY_INFO[0]} ${KEY_INFO[1]}" >> "$REPORT_FILE"
+
+                read -r -a NEW_KEY_FIELDS <<< "$NEW_KEY"
+                NEW_KEY_ID="${NEW_KEY_FIELDS[0]}"
+                NEW_KEY_SECRET="${NEW_KEY_FIELDS[1]}"
+                SNS_MESSAGE=$(create_new_key_text "$ACCOUNT_ID" "arn:aws:iam::$ACCOUNT_ID:user/$USER" "$ELIGIBLE_KEY" "$NEW_KEY")
+
+                echo -e "\tStatus: ROTATED - Deleted old key and created new key" >> "$REPORT_FILE"
+                echo -e "\tDeleted Key: $ELIGIBLE_KEY" >> "$REPORT_FILE"
+                echo -e "\tНова пара $NEW_KEY_ID $NEW_KEY_SECRET" >> "$REPORT_FILE"
+                write_sns_message "$SNS_MESSAGE" "$REPORT_FILE"
                 KEY_ACTIONS=$((KEY_ACTIONS + 1))
             else
                 echo -e "${BLUE}      [REPORT] No keys are eligible for deletion${NC}"
-                echo "      Status: REVIEW ONLY - No deletion performed" >> "$REPORT_FILE"
+                echo -e "\tStatus: REVIEW ONLY - No deletion performed" >> "$REPORT_FILE"
+                SNS_MESSAGE=$(leave_existing_key_text "$ACCOUNT_ID" "arn:aws:iam::$ACCOUNT_ID:user/$USER" "${KEYS_DATA[0]%%|*}" "${KEYS_DATA[1]%%|*}")
+                write_sns_message "$SNS_MESSAGE" "$REPORT_FILE"
             fi
         else
             echo -e "${YELLOW}      [WARNING] Unsupported key count: $KEY_COUNT. Skipping advanced rotation logic.${NC}"
-            echo "      Status: SKIPPED - Unsupported key count" >> "$REPORT_FILE"
+            echo -e "\tStatus: SKIPPED - Unsupported key count" >> "$REPORT_FILE"
             for KEY_INFO in "${KEYS_DATA[@]}"; do
                 IFS='|' read -r KEY_ID CREATE_DATE LAST_USED <<< "$KEY_INFO"
-                echo "      Key: $KEY_ID" >> "$REPORT_FILE"
+                echo -e "\tKey: $KEY_ID" >> "$REPORT_FILE"
             done
         fi
 
@@ -251,7 +296,6 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
         echo "=========================================="
     } >> "$REPORT_FILE"
 
-    echo ""
     echo -e "${GREEN}Script completed successfully!${NC}"
     echo -e "${GREEN}Report saved to: $REPORT_FILE${NC}"
     echo -e "${GREEN}Successfully finished aws --profile $PROFILE${NC}"
