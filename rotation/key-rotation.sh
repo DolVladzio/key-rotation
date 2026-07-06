@@ -16,27 +16,34 @@ iamfullaccess-211255476995
 
 # Templates
 template_text="Шановні колеги!
-У зв'язку з політикою безпеки, ми проводимо ротацію ключів доступу для IAM користувачів у вашому AWS акаунті. 
-Будь ласка, ознайомтеся з інформацією нижче та вжийте необхідних заходів."
+
+Для дотримання вимог Парольної політики у сервісах AWS IAM (https://doc.privatbank.ua/#/doc=6516620&year=2026&folder=ANOTHER_UNDONE), згідно проєкту 23/463-IT Emergency Cyber Security checks and mitigations, повідомляємо про необхідність ротації ключів до технічних IAM користувачів раз у 45днів."
+
+if [[ -z "$template_text" ]]; then
+    echo -e "${RED}Error: template_text is not set${NC}"
+    exit 1
+fi
 
 create_new_key_text() {
     local account_id="$1"
-    local user_arn="$2"
-    local old_key_id="$3"
-    local new_key_pair="$4"
+    local account_name="$2"
+    local user_arn="$3"
+    local old_key_id="$4"
+    local new_key_pair="$5"
 
-    printf '%s\n\nAccount ID: #%s\nIAM user: %s\nСтарий ключ: %s\nНова пара: %s\n' \
-        "$template_text" "$account_id" "$user_arn" "$old_key_id" "$new_key_pair"
+    printf '%s\n\nАкаунт: %s #%s\nIAM user: %s\nСтарий ключ: %s\nНова пара: %s\n\nПісля замінив ключа, повідомте співробітників ІБ зворотнім листом!' \
+        "$template_text" "$account_name" "$account_id" "$user_arn" "$old_key_id" "$new_key_pair"
 }
 
 leave_existing_key_text() {
     local account_id="$1"
-    local user_arn="$2"
-    local old_key_1="$3"
-    local old_key_2="$4"
+    local account_name="$2"
+    local user_arn="$3"
+    local old_key_1="$4"
+    local old_key_2="$5"
 
-    printf '%s\n\nAccount ID: #%s\nIAM user: %s\nСтарий ключ 1: %s\nСтарий ключ 2: %s\nПідкажіть, будь ласка, який ключ можна видалити?\n' \
-        "$template_text" "$account_id" "$user_arn" "$old_key_1" "$old_key_2"
+    printf '%s\n\nАкаунт: %s #%s\nIAM user: %s\nСтарий ключ 1: %s\nСтарий ключ 2: %s\nПідкажіть, будь ласка, який ключ можна видалити?' \
+        "$template_text" "$account_name" "$account_id" "$user_arn" "$old_key_1" "$old_key_2"
 }
 
 write_sns_message() {
@@ -56,6 +63,7 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
     echo -e "${BLUE}Processing AWS profile: $PROFILE${NC}"
     echo -e "${BLUE}Fetching AWS account information...${NC}"
     ACCOUNT_ID=$(aws sts get-caller-identity --profile "$PROFILE" --query Account --output text 2>/dev/null)
+    ACCOUNT_NAME=$(jq -r ".\"$ACCOUNT_ID\"" accounts-info.json 2>/dev/null || echo "Unknown")
 
     if [[ -z "$ACCOUNT_ID" ]]; then
         echo -e "${RED}Error: Could not get account ID. Check your profile: $PROFILE${NC}"
@@ -67,12 +75,12 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
         mkdir -p "$REPORT_DIR"
     fi
 
-    echo -e "${GREEN}Account ID: $ACCOUNT_ID${NC}"
+    echo -e "${GREEN}Account: $ACCOUNT_NAME ($ACCOUNT_ID)${NC}"
     REPORT_FILE="$REPORT_DIR/$(date +%Y%m%d_%H%M%S).txt"
 
     {
         echo "=========================================="
-        echo "Account ID: $ACCOUNT_ID"
+        echo "Account: $ACCOUNT_NAME ($ACCOUNT_ID)"
         echo "Profile: $PROFILE"
         echo "=========================================="
         echo ""
@@ -180,7 +188,7 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
             fi
 
             echo -e "\t\t- AccessKeyId: $KEY_ID (${AGE_DAYS} days old, LastUsed: $LAST_USED_STATUS)" >> "$REPORT_FILE"
-            echo -e "${YELLOW}      [ACTION] Creating new access key${NC}"
+            echo -e "${YELLOW}      [ACTION] Creating new access key(Keeping existing one)${NC}"
             NEW_KEY=$(aws iam create-access-key --user-name "$USER" --profile "$PROFILE" --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text)
             if [[ -z "$NEW_KEY" ]]; then
                 echo -e "\t\t    ${RED}      [ERROR] Failed to create new access key${NC}"
@@ -192,7 +200,7 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
             NEW_KEY_ID="${NEW_KEY_FIELDS[0]}"
             NEW_KEY_SECRET="${NEW_KEY_FIELDS[1]}"
 
-            SNS_MESSAGE=$(create_new_key_text "$ACCOUNT_ID" "arn:aws:iam::$ACCOUNT_ID:user/$USER" "$KEY_ID" "$NEW_KEY")
+            SNS_MESSAGE=$(create_new_key_text "$ACCOUNT_ID" "$ACCOUNT_NAME" "arn:aws:iam::$ACCOUNT_ID:user/$USER" "$KEY_ID" "$NEW_KEY")
 
             echo -e "\t\tStatus: NEW KEY CREATED" >> "$REPORT_FILE"
             echo -e "\t\tНова пара: $NEW_KEY_ID $NEW_KEY_SECRET" >> "$REPORT_FILE"
@@ -267,7 +275,7 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
                 read -r -a NEW_KEY_FIELDS <<< "$NEW_KEY"
                 NEW_KEY_ID="${NEW_KEY_FIELDS[0]}"
                 NEW_KEY_SECRET="${NEW_KEY_FIELDS[1]}"
-                SNS_MESSAGE=$(create_new_key_text "$ACCOUNT_ID" "arn:aws:iam::$ACCOUNT_ID:user/$USER" "$ELIGIBLE_KEY" "$NEW_KEY")
+                SNS_MESSAGE=$(create_new_key_text "$ACCOUNT_ID" "$ACCOUNT_NAME" "arn:aws:iam::$ACCOUNT_ID:user/$USER" "$ELIGIBLE_KEY" "$NEW_KEY")
 
                 echo -e "\tStatus: ROTATED - Deleted old key and created new key" >> "$REPORT_FILE"
                 echo -e "\tDeleted Key: $ELIGIBLE_KEY" >> "$REPORT_FILE"
@@ -277,7 +285,7 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
             else
                 echo -e "${BLUE}      [REPORT] No keys are eligible for deletion${NC}"
                 echo -e "\tStatus: REVIEW ONLY - No deletion performed" >> "$REPORT_FILE"
-                SNS_MESSAGE=$(leave_existing_key_text "$ACCOUNT_ID" "arn:aws:iam::$ACCOUNT_ID:user/$USER" "${KEYS_DATA[0]%%|*}" "${KEYS_DATA[1]%%|*}")
+                SNS_MESSAGE=$(leave_existing_key_text "$ACCOUNT_ID" "$ACCOUNT_NAME" "arn:aws:iam::$ACCOUNT_ID:user/$USER" "${KEYS_DATA[0]%%|*}" "${KEYS_DATA[1]%%|*}")
                 write_sns_message "$SNS_MESSAGE" "$REPORT_FILE"
             fi
         else
