@@ -8,13 +8,39 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-DAYS_THRESHOLD=2
-
+DAYS_THRESHOLD=45
 AWS_PROFILES=(
-iamfullaccess-211255476995
-)
 
-# Templates
+)
+###################################################################
+# Email configuration #
+###################################################################
+gmail_app_pass="${gmail_app_pass:-${GMAIL_APP_PASS:-}}"
+if [[ -z "$gmail_app_pass" ]]; then
+    echo -e "${RED}Error: Gmail app password is not set. Please set the 'gmail_app_pass' or 'GMAIL_APP_PASS' environment variable.${NC}"
+    exit 1
+fi
+
+email_sender=""
+if [[ -z "$email_sender" ]]; then
+    echo -e "${RED}Error: Email sender is not set. Please set the 'email_sender' variable in the script.${NC}"
+    exit 1
+fi
+
+email_recipients=(
+
+)
+if [[ ${#email_recipients[@]} -eq 0 ]]; then
+    echo -e "${RED}Error: No email recipients specified. Please set the 'email_recipients' array in the script.${NC}"
+    exit 1
+fi
+
+EMAIL_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/send-emails.py"
+PYTHON_CMD="$(command -v python3 || command -v python || true)"
+####################################################################
+# Emails Template
+###################################################################
+email_title="Rotate Access Key IAM for users"
 template_text="Шановні колеги!
 
 Для дотримання вимог Парольної політики у сервісах AWS IAM (https://doc.privatbank.ua/#/doc=6516620&year=2026&folder=ANOTHER_UNDONE), згідно проєкту 23/463-IT Emergency Cyber Security checks and mitigations, повідомляємо про необхідність ротації ключів до технічних IAM користувачів раз у 45днів."
@@ -23,7 +49,9 @@ if [[ -z "$template_text" ]]; then
     echo -e "${RED}Error: template_text is not set${NC}"
     exit 1
 fi
-
+###################################################################
+# Functions
+###################################################################
 create_new_key_text() {
     local account_id="$1"
     local account_name="$2"
@@ -46,12 +74,40 @@ leave_existing_key_text() {
         "$template_text" "$account_name" "$account_id" "$user_arn" "$old_key_1" "$old_key_2"
 }
 
-write_sns_message() {
+write_email_message() {
     local message="$1"
     local report_file="$2"
 
-    echo -e "\nSNS message:" >> "$report_file"
+    echo -e "\nEmail body:" >> "$report_file"
     printf '%s\n' "$message" >> "$report_file"
+}
+
+send_email_message() {
+    local subject="$1"
+    local body="$2"
+
+    if [[ -z "$PYTHON_CMD" ]]; then
+        echo -e "${RED}Error: Python interpreter not found.${NC}"
+        return 1
+    fi
+
+    if [[ ! -x "$PYTHON_CMD" && ! -f "$PYTHON_CMD" ]]; then
+        echo -e "${RED}Error: Python interpreter is not executable: $PYTHON_CMD${NC}"
+        return 1
+    fi
+
+    if [[ ! -f "$EMAIL_SCRIPT" ]]; then
+        echo -e "${RED}Error: Email script not found: $EMAIL_SCRIPT${NC}"
+        return 1
+    fi
+
+    local args=("$PYTHON_CMD" "$EMAIL_SCRIPT" --sender "$email_sender" --subject "$subject" --body "$body" --app-pass "$gmail_app_pass")
+
+    for recipient in "${email_recipients[@]}"; do
+        args+=(--recipient "$recipient")
+    done
+
+    "${args[@]}"
 }
 
 if [[ -z "$AWS_PROFILES" ]]; then
@@ -62,12 +118,16 @@ fi
 for PROFILE in "${AWS_PROFILES[@]}"; do
     echo -e "${BLUE}Processing AWS profile: $PROFILE${NC}"
     echo -e "${BLUE}Fetching AWS account information...${NC}"
+    
     ACCOUNT_ID=$(aws sts get-caller-identity --profile "$PROFILE" --query Account --output text 2>/dev/null)
-    ACCOUNT_NAME=$(jq -r ".\"$ACCOUNT_ID\"" accounts-info.json 2>/dev/null || echo "Unknown")
-
     if [[ -z "$ACCOUNT_ID" ]]; then
         echo -e "${RED}Error: Could not get account ID. Check your profile: $PROFILE${NC}"
         exit 1
+    fi
+    
+    ACCOUNT_NAME=$(jq -r ".\"$ACCOUNT_ID\"" ./json/accounts-info.json 2>/dev/null || echo "Unknown")
+    if [[ -z "$ACCOUNT_NAME" || "$ACCOUNT_NAME" == "Unknown" ]]; then
+        echo -e "${YELLOW}Warning: Could not get account name for account ID $ACCOUNT_ID.${NC}"
     fi
 
     REPORT_DIR="./reports/$ACCOUNT_ID"
@@ -200,11 +260,20 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
             NEW_KEY_ID="${NEW_KEY_FIELDS[0]}"
             NEW_KEY_SECRET="${NEW_KEY_FIELDS[1]}"
 
-            SNS_MESSAGE=$(create_new_key_text "$ACCOUNT_ID" "$ACCOUNT_NAME" "arn:aws:iam::$ACCOUNT_ID:user/$USER" "$KEY_ID" "$NEW_KEY")
+            EMAIL_BODY=$(create_new_key_text "$ACCOUNT_ID" "$ACCOUNT_NAME" "arn:aws:iam::$ACCOUNT_ID:user/$USER" "$KEY_ID" "$NEW_KEY")
 
             echo -e "\t\tStatus: NEW KEY CREATED" >> "$REPORT_FILE"
             echo -e "\t\tНова пара: $NEW_KEY_ID $NEW_KEY_SECRET" >> "$REPORT_FILE"
-            write_sns_message "$SNS_MESSAGE" "$REPORT_FILE"
+            write_email_message "$EMAIL_BODY" "$REPORT_FILE"
+
+            if ! send_email_message "$email_title" "$EMAIL_BODY"; then
+                echo -e "${RED}      [ERROR] Failed to send email notification${NC}"
+                echo -e "\t\tStatus: ERROR - Failed to send email notification" >> "$REPORT_FILE"
+                exit 1
+            else
+                echo -e "${GREEN}      [INFO] Email notification sent successfully${NC}"
+            fi
+
             KEY_ACTIONS=$((KEY_ACTIONS + 1))
 
         elif [[ $KEY_COUNT -eq 2 ]]; then
@@ -275,18 +344,36 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
                 read -r -a NEW_KEY_FIELDS <<< "$NEW_KEY"
                 NEW_KEY_ID="${NEW_KEY_FIELDS[0]}"
                 NEW_KEY_SECRET="${NEW_KEY_FIELDS[1]}"
-                SNS_MESSAGE=$(create_new_key_text "$ACCOUNT_ID" "$ACCOUNT_NAME" "arn:aws:iam::$ACCOUNT_ID:user/$USER" "$ELIGIBLE_KEY" "$NEW_KEY")
+                EMAIL_BODY=$(create_new_key_text "$ACCOUNT_ID" "$ACCOUNT_NAME" "arn:aws:iam::$ACCOUNT_ID:user/$USER" "$ELIGIBLE_KEY" "$NEW_KEY")
 
                 echo -e "\tStatus: ROTATED - Deleted old key and created new key" >> "$REPORT_FILE"
                 echo -e "\tDeleted Key: $ELIGIBLE_KEY" >> "$REPORT_FILE"
                 echo -e "\tНова пара $NEW_KEY_ID $NEW_KEY_SECRET" >> "$REPORT_FILE"
-                write_sns_message "$SNS_MESSAGE" "$REPORT_FILE"
+                write_email_message "$EMAIL_BODY" "$REPORT_FILE"
+                
+                if ! send_email_message "$email_title" "$EMAIL_BODY"; then
+                    echo -e "${RED}      [ERROR] Failed to send email notification${NC}"
+                    echo -e "\tStatus: ERROR - Failed to send email notification" >> "$REPORT_FILE"
+                    exit 1
+                else
+                    echo -e "${GREEN}      [INFO] Email notification sent successfully${NC}"
+                fi
+                
                 KEY_ACTIONS=$((KEY_ACTIONS + 1))
             else
                 echo -e "${BLUE}      [REPORT] No keys are eligible for deletion${NC}"
                 echo -e "\tStatus: REVIEW ONLY - No deletion performed" >> "$REPORT_FILE"
-                SNS_MESSAGE=$(leave_existing_key_text "$ACCOUNT_ID" "$ACCOUNT_NAME" "arn:aws:iam::$ACCOUNT_ID:user/$USER" "${KEYS_DATA[0]%%|*}" "${KEYS_DATA[1]%%|*}")
-                write_sns_message "$SNS_MESSAGE" "$REPORT_FILE"
+                EMAIL_BODY=$(leave_existing_key_text "$ACCOUNT_ID" "$ACCOUNT_NAME" "arn:aws:iam::$ACCOUNT_ID:user/$USER" "${KEYS_DATA[0]%%|*}" "${KEYS_DATA[1]%%|*}")
+
+                write_email_message "$EMAIL_BODY" "$REPORT_FILE"
+
+                if ! send_email_message "$email_title" "$EMAIL_BODY"; then
+                    echo -e "${RED}      [ERROR] Failed to send email notification${NC}"
+                    echo -e "\tStatus: ERROR - Failed to send email notification" >> "$REPORT_FILE"
+                    exit 1
+                else
+                    echo -e "${GREEN}      [INFO] Email notification sent successfully${NC}"
+                fi
             fi
         else
             echo -e "${YELLOW}      [WARNING] Unsupported key count: $KEY_COUNT. Skipping advanced rotation logic.${NC}"

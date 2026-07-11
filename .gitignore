@@ -1,3 +1,9 @@
 /rotation/reports/*
 
 /rotation/notebook
+
+/rotation/.venv/
+
+*.json
+
+gmail-app-pass
