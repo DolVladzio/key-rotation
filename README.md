@@ -46,16 +46,7 @@ export GMAIL_APP_PASS="your-app-password"
 email_sender="sender-email@privatbank.ua"
 ```
 
-
-6. Якщо хочете змінити одержувачів, відредагуйте масив `email_recipients` у `rotation/key-rotation.sh`:
-
-```bash
-email_recipients=(
-user-1@privatbank.ua
-)
-```
-
-7. За потреби протестуйте Python-скрипт окремо:
+6. За потреби протестуйте Python-скрипт окремо:
 
 ```bash
 cd rotation

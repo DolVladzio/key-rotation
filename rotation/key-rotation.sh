@@ -12,6 +12,10 @@ DAYS_THRESHOLD=45
 AWS_PROFILES=(
 
 )
+if [[ ${#AWS_PROFILES[@]} -eq 0 ]]; then
+    echo -e "${RED}Error: No AWS profiles specified. Please set the 'AWS_PROFILES' array in the script.${NC}"
+    exit 1
+fi
 ###################################################################
 # Email configuration #
 ###################################################################
