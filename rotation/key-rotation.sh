@@ -19,12 +19,6 @@ fi
 ###################################################################
 # Email configuration #
 ###################################################################
-gmail_app_pass="${gmail_app_pass:-${GMAIL_APP_PASS:-}}"
-if [[ -z "$gmail_app_pass" ]]; then
-    echo -e "${RED}Error: Gmail app password is not set. Please set the 'gmail_app_pass' or 'GMAIL_APP_PASS' environment variable.${NC}"
-    exit 1
-fi
-
 email_sender=""
 if [[ -z "$email_sender" ]]; then
     echo -e "${RED}Error: Email sender is not set. Please set the 'email_sender' variable in the script.${NC}"
@@ -32,15 +26,30 @@ if [[ -z "$email_sender" ]]; then
 fi
 
 email_recipients=(
+# default recepients
 
 )
 if [[ ${#email_recipients[@]} -eq 0 ]]; then
     echo -e "${RED}Error: No email recipients specified. Please set the 'email_recipients' array in the script.${NC}"
     exit 1
+else
+    for USER in "${email_recipients[@]}"; do
+        user=${USER,,}
+        if ! [[ "$user" == *@privatbank.ua ]]; then
+            echo -e "${RED}[Error]: The email recipient $USER doesn't end with @privatbank.ua${NC}"
+            exit 1
+        fi
+    done
 fi
 
-EMAIL_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/send-emails.py"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EMAIL_SCRIPT="$SCRIPT_DIR/send-emails.py"
+LDAP_INFO_FILE="$SCRIPT_DIR/../json/ldap-info.json"
 PYTHON_CMD="$(command -v python3 || command -v python || true)"
+
+if [[ ! -f "$LDAP_INFO_FILE" ]]; then
+    echo -e "${YELLOW}Warning: LDAP info file not found: $LDAP_INFO_FILE. Tag-based recipients will not be resolved.${NC}"
+fi
 ####################################################################
 # Emails Template
 ###################################################################
@@ -86,9 +95,44 @@ write_email_message() {
     printf '%s\n' "$message" >> "$report_file"
 }
 
+append_unique_recipient() {
+    local email="$1"
+    local found=0
+
+    for item in "${user_recipients[@]}"; do
+        [[ "$item" == "$email" ]] && found=1 && break
+    done
+
+    if [[ $found -eq 0 ]]; then
+        user_recipients+=("$email")
+    fi
+}
+
+resolve_ldap_email() {
+    local ldap_key="$1"
+
+    if [[ -z "$ldap_key" || ! -f "$LDAP_INFO_FILE" ]]; then
+        return 1
+    fi
+
+    local email
+    email=$(jq -r --arg key "$ldap_key" '.[$key] // empty' "$LDAP_INFO_FILE" 2>/dev/null || true)
+    if [[ -n "$email" ]]; then
+        printf '%s' "$email"
+        return 0
+    fi
+    return 1
+}
+
 send_email_message() {
     local subject="$1"
     local body="$2"
+    shift 2
+    local recipients=("$@")
+
+    if [[ ${#recipients[@]} -eq 0 ]]; then
+        recipients=("${email_recipients[@]}")
+    fi
 
     if [[ -z "$PYTHON_CMD" ]]; then
         echo -e "${RED}Error: Python interpreter not found.${NC}"
@@ -105,13 +149,33 @@ send_email_message() {
         return 1
     fi
 
-    local args=("$PYTHON_CMD" "$EMAIL_SCRIPT" --sender "$email_sender" --subject "$subject" --body "$body" --app-pass "$gmail_app_pass")
+    local cmd=("$PYTHON_CMD" "$EMAIL_SCRIPT" --sender "$email_sender" --subject "$subject" --body "$body")
 
-    for recipient in "${email_recipients[@]}"; do
-        args+=(--recipient "$recipient")
+    for recipient in "${recipients[@]}"; do
+        cmd+=(--recipient "$recipient")
     done
 
-    "${args[@]}"
+    for replyTo_recipient in "${recipients[@]}"; do
+        cmd+=(--replyTo "$replyTo_recipient")
+    done
+
+    if [[ -n "$PROFILE" ]]; then
+        AWS_PROFILE="$PROFILE" "${cmd[@]}"
+    else
+        "${cmd[@]}"
+    fi
+}
+
+send_user_email() {
+    local subject="$1"
+    local body="$2"
+
+    if [[ ${send_notifications:-0} -eq 0 ]]; then
+        echo -e "${YELLOW}      [INFO] Email notification skipped for user $USER because OWNER/CUSTOMER recipients could not be resolved${NC}"
+        return 0
+    fi
+
+    send_email_message "$subject" "$body" "${user_recipients[@]}"
 }
 
 if [[ -z "$AWS_PROFILES" ]]; then
@@ -129,7 +193,7 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
         exit 1
     fi
     
-    ACCOUNT_NAME=$(jq -r ".\"$ACCOUNT_ID\"" ./json/accounts-info.json 2>/dev/null || echo "Unknown")
+    ACCOUNT_NAME=$(jq -r ".\"$ACCOUNT_ID\"" ../json/accounts-info.json 2>/dev/null || echo "Unknown")
     if [[ -z "$ACCOUNT_NAME" || "$ACCOUNT_NAME" == "Unknown" ]]; then
         echo -e "${YELLOW}Warning: Could not get account name for account ID $ACCOUNT_ID.${NC}"
     fi
@@ -191,25 +255,60 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
                 --query 'Tags[*].[Key,Value]' \
                 --output text 2>/dev/null || true)
         
+        owner_customer_tags_found=0
+        tag_recipients_added=0
+
         if [[ -z "$TAGS" ]]; then
             echo -e "${YELLOW}      [WARNING] Could not retrieve tags for user $USER${NC}"
             echo "    WARNING: Tags unavailable" >> "$REPORT_FILE"
         else
-            MATCHED=0
             while IFS=$'\t' read -r TAG_KEY TAG_VALUE; do
                 TAG_KEY_UPPER="${TAG_KEY^^}"
                 if [[ "$TAG_KEY_UPPER" == *OWNER* || "$TAG_KEY_UPPER" == *CUSTOMER* ]]; then
                     echo -e "\t    $TAG_KEY: $TAG_VALUE" >> "$REPORT_FILE"
-                    MATCHED=1
+                    owner_customer_tags_found=1
                 fi
             done <<< "$TAGS"
 
-            if [[ $MATCHED -eq 1 ]]; then
+            if [[ $owner_customer_tags_found -eq 1 ]]; then
                 echo -e "${GREEN}      [INFO] Tags retrieved successfully${NC}"
             else
                 echo -e "${YELLOW}      [WARNING] OWNER/CUSTOMER related tags not found for user $USER${NC}"
                 echo "    WARNING: OWNER/CUSTOMER related tags not found" >> "$REPORT_FILE"
             fi
+        fi
+
+        user_recipients=("${email_recipients[@]}")
+        if [[ -n "$TAGS" && -f "$LDAP_INFO_FILE" ]]; then
+            while IFS=$'\t' read -r TAG_KEY TAG_VALUE; do
+                TAG_KEY_UPPER="${TAG_KEY^^}"
+                if [[ "$TAG_KEY_UPPER" == *OWNER* || "$TAG_KEY_UPPER" == *CUSTOMER* ]]; then
+                    LDAP_EMAIL="$(resolve_ldap_email "$TAG_VALUE")"
+                    if [[ -n "$LDAP_EMAIL" ]]; then
+                        append_unique_recipient "$LDAP_EMAIL"
+                        tag_recipients_added=1
+                    else
+                        echo -e "${YELLOW}      [WARNING] Could not resolve LDAP tag value '$TAG_VALUE' to email${NC}"
+                        echo "    WARNING: Unresolved LDAP tag value '$TAG_VALUE'" >> "$REPORT_FILE"
+                    fi
+                fi
+            done <<< "$TAGS"
+        fi
+
+        if [[ $owner_customer_tags_found -eq 0 ]]; then
+            echo -e "${YELLOW}      [WARNING] Missing OWNER/CUSTOMER tags for user $USER; skipping email notification${NC}"
+            echo "    WARNING: Missing OWNER/CUSTOMER tags; skipping notifications" >> "$REPORT_FILE"
+            send_notifications=0
+        elif [[ $tag_recipients_added -eq 0 ]]; then
+            echo -e "${YELLOW}      [WARNING] OWNER/CUSTOMER tags found but no LDAP recipients resolved for user $USER; skipping email notification${NC}"
+            echo "    WARNING: No LDAP recipients resolved from tag values; skipping notifications" >> "$REPORT_FILE"
+            send_notifications=0
+        else
+            send_notifications=1
+        fi
+
+        if [[ ${#user_recipients[@]} -eq 0 ]]; then
+            user_recipients=("${email_recipients[@]}")
         fi
         
         # Process keys
@@ -270,12 +369,12 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
             echo -e "\t\tНова пара: $NEW_KEY_ID $NEW_KEY_SECRET" >> "$REPORT_FILE"
             write_email_message "$EMAIL_BODY" "$REPORT_FILE"
 
-            if ! send_email_message "$email_title" "$EMAIL_BODY"; then
+            if ! send_user_email "$email_title" "$EMAIL_BODY"; then
                 echo -e "${RED}      [ERROR] Failed to send email notification${NC}"
                 echo -e "\t\tStatus: ERROR - Failed to send email notification" >> "$REPORT_FILE"
                 exit 1
             else
-                echo -e "${GREEN}      [INFO] Email notification sent successfully${NC}"
+                echo -e "${GREEN}      [INFO] Email notification flow completed${NC}"
             fi
 
             KEY_ACTIONS=$((KEY_ACTIONS + 1))
@@ -355,12 +454,12 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
                 echo -e "\tНова пара $NEW_KEY_ID $NEW_KEY_SECRET" >> "$REPORT_FILE"
                 write_email_message "$EMAIL_BODY" "$REPORT_FILE"
                 
-                if ! send_email_message "$email_title" "$EMAIL_BODY"; then
+                if ! send_user_email "$email_title" "$EMAIL_BODY"; then
                     echo -e "${RED}      [ERROR] Failed to send email notification${NC}"
                     echo -e "\tStatus: ERROR - Failed to send email notification" >> "$REPORT_FILE"
                     exit 1
                 else
-                    echo -e "${GREEN}      [INFO] Email notification sent successfully${NC}"
+                    echo -e "${GREEN}      [INFO] Email notification flow completed${NC}"
                 fi
                 
                 KEY_ACTIONS=$((KEY_ACTIONS + 1))
@@ -371,12 +470,12 @@ for PROFILE in "${AWS_PROFILES[@]}"; do
 
                 write_email_message "$EMAIL_BODY" "$REPORT_FILE"
 
-                if ! send_email_message "$email_title" "$EMAIL_BODY"; then
+                if ! send_user_email "$email_title" "$EMAIL_BODY"; then
                     echo -e "${RED}      [ERROR] Failed to send email notification${NC}"
                     echo -e "\tStatus: ERROR - Failed to send email notification" >> "$REPORT_FILE"
                     exit 1
                 else
-                    echo -e "${GREEN}      [INFO] Email notification sent successfully${NC}"
+                    echo -e "${GREEN}      [INFO] Email notification flow completed${NC}"
                 fi
             fi
         else
