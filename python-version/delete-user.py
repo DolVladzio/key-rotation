@@ -1,0 +1,1 @@
+# https://docs.aws.amazon.com/boto3/latest/reference/services/identitystore/client/delete_user.html
