@@ -13,7 +13,7 @@ if not identity_store or len(identity_store) == 0:
 
 approval_id = "1234567"
 user_names = [
-    "dolynkavladzio@gmail.com"
+    "dolynkavladzi@gmail.com"
 ]
 group_names = [
     "TestGroup1",
@@ -29,7 +29,7 @@ if not group_names or len(group_names) == 0 \
 
 NEW_CREATED_GROUPS = []
 NOT_CREATED_USERS = []
-SKIPPED_MEMBERSHIPS = []
+SKIPPED_MEMBERSHIPS = {}
 ############################################################
 # Creating/Getting groups
 #############################################################
@@ -72,8 +72,7 @@ def creating_getting_groups(group):
             logging.error(f"[ERROR] AWS Error looking up group '{group}': {e}")
             sys.exit(1)
             
-    return group_id, new_group
-            
+    return group_id, new_group     
 ############################################################
 # Upd group descriptions
 #############################################################
@@ -126,14 +125,12 @@ def upd_group_descriptions(group_id):
     except ClientError as e:
         logging.error(f"[ERROR] AWS Error updating the desc in the group: '{group}': {e}")
         sys.exit(1)
-        
 ############################################################
 # Group assignments
 #############################################################
 def group_assignments(new_group, group):
     if new_group:
         print(f">>> Initiating group assignments for the new group: {group}...")    
-
 ############################################################
 # Getting users
 #############################################################
@@ -163,7 +160,30 @@ def getting_users(user):
             logging.error(f"[ERROR] AWS Error looking up user '{group}': {e}")
             sys.exit(1)
             
-    return new_user
+    return new_user or user_id
+
+def get_group_membership_id(user_id, user, group, grop_id):
+    try:
+        response = sso.get_group_membership_id(
+            IdentityStoreId=identity_store,
+            GroupId=grop_id,
+            MemberId={
+                'UserId': user_id
+            }
+        )
+        membership_id = response['MembershipId']
+        print(f"[INFO] The user '{user}' was found in the group: {group}(MembershipId: {membership_id}).\n")
+    except Exception as e:
+        error_code = e.response['Error']['Code']
+        if error_code == 'ResourceNotFoundException':
+            logging.error(f"[WARNING] Failed to get membership id!\n")
+            SKIPPED_MEMBERSHIPS[user] = group
+        else:
+            # Handle real errors (e.g., AccessDeniedException, ValidationException)
+            logging.error(f"[ERROR] AWS Error looking up the membership id '{group}': {e}")
+            sys.exit(1)
+            
+    return membership_id
 
 if __name__ == "__main__":
     for group in group_names:
@@ -174,7 +194,7 @@ if __name__ == "__main__":
         
         upd_group_descriptions(group_id)
         
-        group_assignments(new_group, group)
+        # group_assignments(new_group, group)
         
         # USERS
         for user in user_names:
@@ -182,12 +202,13 @@ if __name__ == "__main__":
             print(f">>> Processing the user: {user}")
             print("#############################################################")
             
-            new_user = getting_users(user)
+            new_user, user_id = getting_users(user)
             
-            if new_user:
-                print(f"The user: {user} is going to be created. Creating...")
-            else:
-                continue
+            # if new_user:
+            #     continue
+            # else:
+            #     if get_group_membership_id(user_id, user, group, group_id):
+            #         print(f">>> The user: {user} is gonna be added to the group: {group}")
             
             print(f">>> Finished with the user: {user}")
            
@@ -204,3 +225,9 @@ if __name__ == "__main__":
         print("Now created users:")
         for missing_user in NOT_CREATED_USERS:
             print(f"- {missing_user}")
+            
+    if SKIPPED_MEMBERSHIPS:  # Evaluates to True ONLY if the list is non-empty
+        print("#############################################################")
+        print("Skipped memberships:")
+        for skipped_membership in SKIPPED_MEMBERSHIPS:
+            print(f"- {skipped_membership}")
