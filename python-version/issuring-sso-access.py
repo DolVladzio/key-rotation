@@ -25,7 +25,6 @@ user_names = [
     "dolynkavladzio@gmail.com"
 ]
 group_names = [
-    "candypractise-dvps002",
     "candypractise-dvps001"
 ]
 if not group_names or len(group_names) == 0 \
@@ -148,10 +147,11 @@ def get_perm_set_arn(perm_set, sso_instance_arn, perm_sets_file):
 
     # If found in JSON, return directly
     if perm_set in perm_set_map:
+        print(f"\n[SUCCESS] Permission set: {perm_set} is found in the json file!")
         return perm_set_map[perm_set]
 
     # If NOT in JSON, fetch all from AWS and update local JSON cache
-    print(f"[INFO] '{perm_set}' not in local JSON. Fetching from AWS...")
+    print(f"\n[INFO] '{perm_set}' not in local JSON. Fetching from AWS...")
     paginator = sso_admin.get_paginator('list_permission_sets')
 
     for page in paginator.paginate(InstanceArn=sso_instance_arn):
@@ -204,7 +204,7 @@ def group_assignments(group_id, group, permission_set_arn):
             print(f"[INFO] Assignment request {request_id} current status: {status}")
 
         if status == 'SUCCEEDED':
-            print(f"[SUCCESS] Group assignment for '{group}' succeeded.\n")
+            print(f"[SUCCESS] Group assignment for '{group}' succeeded.")
         else:
             failure_reason = creation_status.get('FailureReason', 'Unknown failure reason')
             logging.error(f"[ERROR] Group assignment for '{group}' ended with status {status}: {failure_reason}\n")
@@ -319,23 +319,22 @@ if __name__ == "__main__":
                 print(f"[INFO] Skipping group membership for missing user '{user}'.\n")
             
             print(f">>> Finished with the user: {user}")
+            print("#############################################################")
            
         print(f">>> Finished with the group: {group}")
+        print("#############################################################")
 
     if NEW_CREATED_GROUPS:  # Evaluates to True ONLY if the list is non-empty
-        print("#############################################################")
-        print("New created groups:")
+        print("\nNew created groups:")
         for new_group in NEW_CREATED_GROUPS:
             print(f"- {new_group}")
             
     if NOT_CREATED_USERS:  # Evaluates to True ONLY if the list is non-empty
-        print("#############################################################")
-        print("Not created users:")
+        print("\nNot created users:")
         for missing_user in NOT_CREATED_USERS:
             print(f"- {missing_user}")
             
     if SKIPPED_MEMBERSHIPS:  # Evaluates to True ONLY if the list is non-empty
-        print("#############################################################")
-        print("Skipped memberships:")
+        print("\nSkipped memberships:")
         for skipped_membership in SKIPPED_MEMBERSHIPS:
             print(f"- {skipped_membership}")
