@@ -6,31 +6,30 @@ import boto3
 import re
 import json
 from botocore.exceptions import ClientError
-
+# SSO config
 sso = boto3.client('identitystore')
 sso_admin = boto3.client("sso-admin")
 identity_store = "d-99674adf84"
-perm_sets_file = "./json/perm-sets.json"
 sso_instance_arn = "arn:aws:sso:::instance/ssoins-69871e4b7efde7cd"
+# JSON required files
+perm_sets_file = "./json/perm-sets.json"
+accounts_list_info_file = "./json/accounts-list-info.json"
 
-target_account_id = "211255476995"
-perm_set = "dvps001"
-
-if not sso_instance_arn or not identity_store or not perm_sets_file:
-    logging.error("[ERROR] No identity store id, sso instance arn or perm sets file provided. Exiting.")
+if not sso_instance_arn or not identity_store or not perm_sets_file or not accounts_list_info_file:
+    logging.error("[ERROR] No identity store id, sso instance arn, perm sets file or accounts list file provided. Exiting.")
     sys.exit(1)
 
-approval_id = "12345678"
+approval_id = ""
 user_names = [
-    "dolynkavladzio@gmail.com"
+    ""
 ]
 group_names = [
-    "candypractise-dvps001"
+    ""
 ]
 if not group_names or len(group_names) == 0 \
     and not user_names or len(user_names) == 0 \
         and not approval_id or len(approval_id) == 0:
-    logging.error("[ERROR] No group names or approval id provided. Exiting.")
+    logging.error("[ERROR] No group names, user names or approval id provided. Exiting.")
     sys.exit(1)
 
 NEW_CREATED_GROUPS = []
@@ -132,7 +131,42 @@ def upd_group_descriptions(group_id):
         logging.error(f"[ERROR] AWS Error updating the desc in the group: '{group}': {e}")
         sys.exit(1)
 ############################################################
-# Group assignments
+# Analyzing group name to get account id and perm set name
+#############################################################
+def preparing_group_assignments(group, accounts_list_info_file):
+    try:
+        with open(accounts_list_info_file, "r") as f:
+            accounts_map = json.load(f)
+    except FileNotFoundError:
+        accounts_map = {}
+    except json.JSONDecodeError as e:
+        logging.error(f"[ERROR] Invalid JSON in {accounts_list_info_file}: {e}")
+        sys.exit(1)
+
+    best_match = None
+    best_account_name = None
+    for account_name, account_id in accounts_map.items():
+        account_name_lower = account_name.lower()
+        prefix = account_name_lower + '-'
+        if group.startswith(prefix):
+            if best_match is None or len(account_name_lower) > len(best_match):
+                best_match = account_name_lower
+                best_account_name = account_name
+                best_account_id = account_id
+
+    if not best_match:
+        logging.error(f"[ERROR] Account name prefix for group '{group}' was not found in {accounts_list_info_file}.")
+        sys.exit(1)
+
+    perm_set_name = group[len(best_account_name) + 1:]
+    if not perm_set_name:
+        logging.error(f"[ERROR] Group name '{group}' does not include a permission set after the account name '{best_account_name}'.")
+        sys.exit(1)
+
+    print(f"\n[SUCCESS] For account '{best_account_name}' found id: {best_account_id} in the json file!")
+    return best_account_id, perm_set_name
+############################################################
+# Getting perm set arn
 #############################################################
 def get_perm_set_arn(perm_set, sso_instance_arn, perm_sets_file):
     # Load existing local cache
@@ -174,7 +208,7 @@ def get_perm_set_arn(perm_set, sso_instance_arn, perm_sets_file):
 ############################################################
 # Group assignments
 #############################################################
-def group_assignments(group_id, group, permission_set_arn):
+def group_assignments(group_id, group, target_account_id, permission_set_arn):
     if not all([sso_instance_arn, target_account_id, permission_set_arn]):
         logging.error("[ERROR] Missing SSO assignment configuration. Set sso_instance_arn, target_account_id, and permission_set_arn.")
         sys.exit(1)
@@ -275,7 +309,7 @@ def get_group_membership_id(user_id, user, group, grop_id):
                     }
                 )
                 membership_id = response['MembershipId']
-                print(f"[SUCCESS] Successfully created the membership:\n\tUser: '{user}\n\tGroup: {group}'\n\tMembership ID: {membership_id}).\n")
+                print(f"[SUCCESS] Successfully created the membership:\n\tUser: '{user}\n\tGroup: {group}'\n\tMembership ID: ({membership_id}).\n")
             except Exception as e:
                 SKIPPED_MEMBERSHIPS[user] = group
                 logging.error(f"[ERROR] Failed to create an membership '{user}': {group}")
@@ -290,23 +324,26 @@ def get_group_membership_id(user_id, user, group, grop_id):
     return membership_id
 
 if __name__ == "__main__":
-    for group in group_names:
+    for GROUP in group_names:
+        group = GROUP.lower()
         print("#############################################################")
         print(f">>> Processing the group: {group}")
         print("#############################################################")
         group_id, new_group = creating_getting_groups(group)
         
         upd_group_descriptions(group_id)
-
+        # Launching this when a new group is created
         if new_group:
-            permission_set_arn = get_perm_set_arn(perm_set, sso_instance_arn, perm_sets_file)
+            target_account_id, perm_set_name = preparing_group_assignments(group, accounts_list_info_file)
+            permission_set_arn = get_perm_set_arn(perm_set_name, sso_instance_arn, perm_sets_file)
             if not permission_set_arn:
-                logging.error(f"[ERROR] Permission set '{perm_set}' was not found.")
+                logging.error(f"[ERROR] Permission set '{perm_set_name}' was not found.")
                 sys.exit(1)
-            group_assignments(group_id, group, permission_set_arn)
+            group_assignments(group_id, group, target_account_id, permission_set_arn)
         
         # USERS
-        for user in user_names:
+        for USER in user_names:
+            user = USER.lower()
             print("#############################################################")
             print(f">>> Processing the user: {user}")
             print("#############################################################")
@@ -322,7 +359,6 @@ if __name__ == "__main__":
             print("#############################################################")
            
         print(f">>> Finished with the group: {group}")
-        print("#############################################################")
 
     if NEW_CREATED_GROUPS:  # Evaluates to True ONLY if the list is non-empty
         print("\nNew created groups:")
